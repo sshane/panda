@@ -576,9 +576,10 @@ int usb_cb_control_msg(USB_Setup_TypeDef *setup, uint8_t *resp) {
     case 0xf6:
       siren_enabled = (setup->b.wValue.w != 0U);
       break;
-    // **** 0xf7: set green led enabled
+    // **** 0xf7: led control
     case 0xf7:
-      green_led_enabled = (setup->b.wValue.w != 0U);
+      green_led_enabled = (setup->b.wValue.w == 1U);
+      red_led_enabled = (setup->b.wValue.w == 2U);
       break;
 #ifdef ALLOW_DEBUG
     // **** 0xf8: disable heartbeat checks
@@ -637,6 +638,9 @@ void tick_handler(void) {
     // siren
     current_board->set_siren((loop_counter & 1U) && (siren_enabled || (siren_countdown > 0U)));
 
+    // spam red led at 8Hz if sentry mode is active
+    current_board->set_led(LED_RED, red_led_enabled && (uptime_cnt & 1U));
+
     // decimated to 1Hz
     if (loop_counter == 0U) {
       can_live = pending_can_live;
@@ -665,7 +669,7 @@ void tick_handler(void) {
 
       // turn off the blue LED, turned on by CAN
       // unless we are in power saving mode
-      current_board->set_led(LED_BLUE, (uptime_cnt & 1U) && (power_save_status == POWER_SAVE_STATUS_ENABLED));
+      current_board->set_led(LED_BLUE, !red_led_enabled && (uptime_cnt & 1U) && (power_save_status == POWER_SAVE_STATUS_ENABLED));
 
       // increase heartbeat counter and cap it at the uint32 limit
       if (heartbeat_counter < __UINT32_MAX__) {

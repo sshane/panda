@@ -15,6 +15,7 @@ const board *current_board;
 bool is_enumerated = 0;
 uint32_t uptime_cnt = 0;
 bool green_led_enabled = false;
+bool red_led_enabled = false;
 
 // heartbeat state
 uint32_t heartbeat_counter = 0;
