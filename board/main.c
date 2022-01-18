@@ -638,8 +638,11 @@ void tick_handler(void) {
     // siren
     current_board->set_siren((loop_counter & 1U) && (siren_enabled || (siren_countdown > 0U)));
 
-    // spam red led at 8Hz if sentry mode is active
-    current_board->set_led(LED_RED, red_led_enabled && (uptime_cnt & 1U));
+    if (red_led_enabled) {
+      // spam red led at 8Hz if sentry mode is active
+      current_board->set_led(LED_RED, 1);
+      current_board->set_led(LED_GREEN, 0);
+    }
 
     // decimated to 1Hz
     if (loop_counter == 0U) {
