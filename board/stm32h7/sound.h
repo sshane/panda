@@ -12,7 +12,6 @@ __attribute__((section(".sram4"))) static uint16_t mic_tx_buf[2][MIC_TX_BUF_SIZE
 #define SOUND_IDLE_TIMEOUT 4U
 #define MIC_SKIP_BUFFERS 2U // Skip first 2 buffers (1024 samples = ~21ms at 48kHz)
 static uint8_t sound_idle_count;
-static uint8_t mic_buffer_count;
 uint16_t sound_output_level;
 
 void sound_tick(void) {
@@ -28,6 +27,8 @@ void sound_tick(void) {
 
 // Recording processing
 static void DMA1_Stream0_IRQ_Handler(void) {
+  static uint8_t mic_buffer_count;
+
   DMA1->LIFCR |= 0x7DU; // clear flags
 
   uint8_t tx_buf_idx = (((BDMA_Channel1->CCR & BDMA_CCR_CT) >> BDMA_CCR_CT_Pos) == 1U) ? 0U : 1U;
@@ -181,7 +182,7 @@ void sound_init(void) {
   // stereo audio in
   register_set(&SAI4_Block_B->CR1, SAI_xCR1_DMAEN | SAI_xCR1_NODIV | (55UL << SAI_xCR1_MCKDIV_Pos) | SAI_xCR1_CKSTR | (0b100U << SAI_xCR1_DS_Pos) | (0b01U << SAI_xCR1_MODE_Pos), 0x0FFB3FEFU);
   register_set(&SAI4_Block_B->CR2, (0b001U << SAI_xCR2_FTH_Pos), 0xFFFBU);
-  register_set(&SAI4_Block_B->FRCR, SAI_xFRCR_FSOFF | SAI_xFRCR_FSDEF | (15U << SAI_xFRCR_FSALL_Pos) | (31U << SAI_xFRCR_FRL_Pos), 0x7FFFFU);
+  register_set(&SAI4_Block_B->FRCR, SAI_xFRCR_FSOFF | SAI_xFRCR_FSDEF | (15UL << SAI_xFRCR_FSALL_Pos) | (31U << SAI_xFRCR_FRL_Pos), 0x7FFFFU);
   register_set(&SAI4_Block_B->SLOTR, (0b11UL << SAI_xSLOTR_SLOTEN_Pos) | (1UL << SAI_xSLOTR_NBSLOT_Pos) | (0b01UL << SAI_xSLOTR_SLOTSZ_Pos), 0xFFFF0FDFU); // NBSLOT definition is vague
 
   // init sound DMA (SAI4_B -> memory, double buffers)
@@ -196,7 +197,7 @@ void sound_init(void) {
   // mic output
   register_set(&SAI4_Block_A->CR1, SAI_xCR1_DMAEN | SAI_xCR1_CKSTR | (0b01UL << SAI_xCR1_SYNCEN_Pos) | (0b100UL << SAI_xCR1_DS_Pos) | (0b10UL << SAI_xCR1_MODE_Pos), 0x0FFB3FEFU);
   register_set(&SAI4_Block_A->CR2, 0U, 0xFFFBU);
-  register_set(&SAI4_Block_A->FRCR, SAI_xFRCR_FSOFF | SAI_xFRCR_FSDEF | (15U << SAI_xFRCR_FSALL_Pos) | (31U << SAI_xFRCR_FRL_Pos), 0x7FFFFU);
+  register_set(&SAI4_Block_A->FRCR, SAI_xFRCR_FSOFF | SAI_xFRCR_FSDEF | (15UL << SAI_xFRCR_FSALL_Pos) | (31U << SAI_xFRCR_FRL_Pos), 0x7FFFFU);
   register_set(&SAI4_Block_A->SLOTR, (0b11UL << SAI_xSLOTR_SLOTEN_Pos) | (1UL << SAI_xSLOTR_NBSLOT_Pos) | (0b01U << SAI_xSLOTR_SLOTSZ_Pos), 0xFFFF0FDFU); // NBSLOT definition is vague
 
   // init DFSDM for PDM mic
