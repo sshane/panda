@@ -12,7 +12,6 @@ __attribute__((section(".sram4"))) static uint16_t mic_tx_buf[2][MIC_TX_BUF_SIZE
 #define SOUND_IDLE_TIMEOUT 4U
 #define MIC_SKIP_BUFFERS 2U // Skip first 2 buffers (1024 samples = ~21ms at 48kHz)
 static uint8_t sound_idle_count;
-static uint8_t mic_idle_count;
 static uint8_t mic_buffer_count;
 uint16_t sound_output_level;
 
@@ -23,14 +22,6 @@ void sound_tick(void) {
       current_board->set_amp_enabled(false);
       register_clear_bits(&DMA1_Stream1->CR, DMA_SxCR_EN);
       sound_output_level = 0U;
-    }
-  }
-
-  if (mic_idle_count > 0U) {
-    mic_idle_count--;
-    if (mic_idle_count == 0U) {
-      register_clear_bits(&DFSDM1_Channel0->CHCFGR1, DFSDM_CHCFGR1_DFSDMEN);
-      mic_buffer_count = 0U;
     }
   }
 }
@@ -117,12 +108,13 @@ static void BDMA_Channel0_IRQ_Handler(void) {
     sound_idle_count = SOUND_IDLE_TIMEOUT;
   }
 
-  // manage mic state
-  if (mic_idle_count == 0U) {
+  // Start capture once, away from an output buffer swap. Both clocks then run together.
+  uint32_t mic_remaining = BDMA_Channel1->CNDTR;
+  if (((DFSDM1_Channel0->CHCFGR1 & DFSDM_CHCFGR1_DFSDMEN) == 0U) &&
+      (mic_remaining > (MIC_RX_BUF_SIZE / 2U)) && (mic_remaining < (3U * MIC_RX_BUF_SIZE / 2U))) {
     register_set_bits(&DFSDM1_Channel0->CHCFGR1, DFSDM_CHCFGR1_DFSDMEN);
     DFSDM1_Filter0->FLTCR1 |= DFSDM_FLTCR1_RSWSTART;
   }
-  mic_idle_count = SOUND_IDLE_TIMEOUT;
 }
 
 void sound_init_dac(void) {
@@ -173,13 +165,23 @@ void sound_init(void) {
   TIM5->CNT = 0U; TIM5->SR = 0U;
   TIM5->CR1 |= TIM_CR1_CEN;
 
+  // Shared 84.48 MHz clock: mic /32 /55 and I2S /55 /32 have the same sample rate.
+  register_set(&RCC->PLL2DIVR, (66UL << RCC_PLL2DIVR_N2_Pos) | (3UL << RCC_PLL2DIVR_P2_Pos), 0x7F7FFFFFU);
+  register_set(&RCC->PLL2FRACR, 4784UL << RCC_PLL2FRACR_FRACN2_Pos, RCC_PLL2FRACR_FRACN2_Msk);
+  register_set(&RCC->PLLCFGR, RCC_PLLCFGR_PLL2RGE_2 | RCC_PLLCFGR_DIVP2EN | RCC_PLLCFGR_PLL2FRACEN,
+               RCC_PLLCFGR_PLL2RGE | RCC_PLLCFGR_PLL2VCOSEL | RCC_PLLCFGR_DIVP2EN | RCC_PLLCFGR_PLL2FRACEN);
+  register_set_bits(&RCC->CR, RCC_CR_PLL2ON);
+  while ((RCC->CR & RCC_CR_PLL2RDY) == 0U) {}
+  register_set(&RCC->D2CCIP1R, RCC_D2CCIP1R_SAI1SEL_0, RCC_D2CCIP1R_SAI1SEL);
+  register_set(&RCC->D3CCIPR, RCC_D3CCIPR_SAI4ASEL_0 | RCC_D3CCIPR_SAI4BSEL_0, RCC_D3CCIPR_SAI4ASEL | RCC_D3CCIPR_SAI4BSEL);
+
   // sync both SAIs
   register_set(&SAI4->GCR, (0b10UL << SAI_GCR_SYNCOUT_Pos), SAI_GCR_SYNCIN_Msk | SAI_GCR_SYNCOUT_Msk);
 
   // stereo audio in
-  register_set(&SAI4_Block_B->CR1, SAI_xCR1_DMAEN | (0b00UL << SAI_xCR1_SYNCEN_Pos) | (0b100U << SAI_xCR1_DS_Pos) | (0b11U << SAI_xCR1_MODE_Pos), 0x0FFB3FEFU);
+  register_set(&SAI4_Block_B->CR1, SAI_xCR1_DMAEN | SAI_xCR1_NODIV | (55UL << SAI_xCR1_MCKDIV_Pos) | SAI_xCR1_CKSTR | (0b100U << SAI_xCR1_DS_Pos) | (0b01U << SAI_xCR1_MODE_Pos), 0x0FFB3FEFU);
   register_set(&SAI4_Block_B->CR2, (0b001U << SAI_xCR2_FTH_Pos), 0xFFFBU);
-  register_set(&SAI4_Block_B->FRCR, (31U << SAI_xFRCR_FRL_Pos), 0x7FFFFU);
+  register_set(&SAI4_Block_B->FRCR, SAI_xFRCR_FSOFF | SAI_xFRCR_FSDEF | (15U << SAI_xFRCR_FSALL_Pos) | (31U << SAI_xFRCR_FRL_Pos), 0x7FFFFU);
   register_set(&SAI4_Block_B->SLOTR, (0b11UL << SAI_xSLOTR_SLOTEN_Pos) | (1UL << SAI_xSLOTR_NBSLOT_Pos) | (0b01UL << SAI_xSLOTR_SLOTSZ_Pos), 0xFFFF0FDFU); // NBSLOT definition is vague
 
   // init sound DMA (SAI4_B -> memory, double buffers)
@@ -192,13 +194,13 @@ void sound_init(void) {
   register_set_bits(&BDMA_Channel0->CCR, BDMA_CCR_EN);
 
   // mic output
-  register_set(&SAI4_Block_A->CR1, SAI_xCR1_DMAEN | (0b01UL << SAI_xCR1_SYNCEN_Pos) | (0b100UL << SAI_xCR1_DS_Pos) | (0b10UL << SAI_xCR1_MODE_Pos), 0x0FFB3FEFU);
+  register_set(&SAI4_Block_A->CR1, SAI_xCR1_DMAEN | SAI_xCR1_CKSTR | (0b01UL << SAI_xCR1_SYNCEN_Pos) | (0b100UL << SAI_xCR1_DS_Pos) | (0b10UL << SAI_xCR1_MODE_Pos), 0x0FFB3FEFU);
   register_set(&SAI4_Block_A->CR2, 0U, 0xFFFBU);
-  register_set(&SAI4_Block_A->FRCR, (31U << SAI_xFRCR_FRL_Pos), 0x7FFFFU);
+  register_set(&SAI4_Block_A->FRCR, SAI_xFRCR_FSOFF | SAI_xFRCR_FSDEF | (15U << SAI_xFRCR_FSALL_Pos) | (31U << SAI_xFRCR_FRL_Pos), 0x7FFFFU);
   register_set(&SAI4_Block_A->SLOTR, (0b11UL << SAI_xSLOTR_SLOTEN_Pos) | (1UL << SAI_xSLOTR_NBSLOT_Pos) | (0b01U << SAI_xSLOTR_SLOTSZ_Pos), 0xFFFF0FDFU); // NBSLOT definition is vague
 
   // init DFSDM for PDM mic
-  register_set(&DFSDM1_Channel0->CHCFGR1, (90UL << DFSDM_CHCFGR1_CKOUTDIV_Pos) | DFSDM_CHCFGR1_CHEN, 0xC0FFF1EFU); // CH0 controls the clock
+  register_set(&DFSDM1_Channel0->CHCFGR1, (31UL << DFSDM_CHCFGR1_CKOUTDIV_Pos) | DFSDM_CHCFGR1_CKOUTSRC | DFSDM_CHCFGR1_CHEN, 0xC0FFF1EFU); // CH0 controls the clock
   register_set(&DFSDM1_Channel3->CHCFGR1, (0b01UL << DFSDM_CHCFGR1_SPICKSEL_Pos) | (0b00U << DFSDM_CHCFGR1_SITP_Pos) | DFSDM_CHCFGR1_CHEN, 0x0000F1EFU); // SITP determines sample edge
   register_set(&DFSDM1_Filter0->FLTFCR, (0U << DFSDM_FLTFCR_IOSR_Pos) | (54UL << DFSDM_FLTFCR_FOSR_Pos) | (4UL << DFSDM_FLTFCR_FORD_Pos), 0xE3FF00FFU);
   register_set(&DFSDM1_Filter0->FLTCR1, DFSDM_FLTCR1_FAST | (3UL << DFSDM_FLTCR1_RCH_Pos) | DFSDM_FLTCR1_RDMAEN | DFSDM_FLTCR1_RCONT | DFSDM_FLTCR1_DFEN, 0x672E7F3BU);
