@@ -80,10 +80,19 @@ int comms_control_handler(ControlPacket_t *req, uint8_t *resp) {
       break;
     case 0xef:
       {
+        uint32_t clock_edges = 0U;
+        uint32_t previous_clock = GPIOE->IDR & (1UL << 6);
+        for (uint32_t sample = 0U; sample < 2048U; sample++) {
+          uint32_t input_clock = GPIOE->IDR & (1UL << 6);
+          if (input_clock != previous_clock) {
+            clock_edges++;
+          }
+          previous_clock = input_clock;
+        }
         uint32_t probe_values[16] = {clock_probe_mic_blocks, clock_probe_i2s_blocks, mic_idle_count, DFSDM1_Channel0->CHCFGR1,
           RCC->D2CCIP1R, GPIOC->MODER, GPIOC->AFR[1], GPIOC->IDR, GPIOE->IDR, DBGMCU->IDCODE,
           SAI4_Block_B->CR1, SAI4_Block_B->FRCR, DMA1_Stream0->NDTR, BDMA_Channel1->CNDTR,
-          DFSDM1_Filter0->FLTISR, DFSDM1_Filter0->FLTCR1};
+          DFSDM1_Filter0->FLTISR, clock_edges};
         (void)memcpy(resp, probe_values, sizeof(probe_values));
         resp_len = sizeof(probe_values);
       }
