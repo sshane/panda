@@ -87,6 +87,14 @@ int comms_control_handler(ControlPacket_t *req, uint8_t *resp) {
       resp[1] = ((fan_state.rpm & 0xFF00U) >> 8U);
       resp_len = 2;
       break;
+    // **** 0xb3: renew audio stream lease (bit 0 playback, bit 1 capture)
+    case 0xb3:
+#ifdef STM32H7
+      if (hw_type == HW_TYPE_CUATRO) {
+        sound_set_enabled((req->param1 & 1U) != 0U, (req->param1 & 2U) != 0U);
+      }
+#endif
+      break;
     // **** 0xb5: request deep sleep, wakes on CAN or SBU
     #ifdef ALLOW_DEBUG
     case 0xb5:

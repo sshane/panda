@@ -12,9 +12,53 @@ __attribute__((section(".sram4"))) static uint16_t mic_tx_buf[2][MIC_TX_BUF_SIZE
 #define SOUND_IDLE_TIMEOUT 4U
 #define MIC_SKIP_BUFFERS 2U // Skip first 2 buffers (1024 samples = ~21ms at 48kHz)
 static uint8_t sound_idle_count;
+static uint8_t audio_idle_count;
+static uint8_t mic_buffer_count;
+static bool mic_requested;
 uint16_t sound_output_level;
 
+// Linux renews this lease while its playback/capture PCM streams are open.
+void sound_set_enabled(bool playback, bool capture) {
+  mic_requested = capture;
+  if (playback || capture) {
+    audio_idle_count = SOUND_IDLE_TIMEOUT;
+    register_set_bits(&RCC->CR, RCC_CR_PLL2ON);
+    while ((RCC->CR & RCC_CR_PLL2RDY) == 0U) {}
+    register_set_bits(&SAI4_Block_A->CR1, SAI_xCR1_SAIEN);
+    register_set_bits(&SAI4_Block_B->CR1, SAI_xCR1_SAIEN);
+  } else {
+    audio_idle_count = MIN(audio_idle_count, 1U);
+  }
+}
+
 void sound_tick(void) {
+  if (audio_idle_count > 0U) {
+    audio_idle_count--;
+  }
+  if ((!mic_requested || (audio_idle_count == 0U)) && ((DFSDM1_Channel0->CHCFGR1 & DFSDM_CHCFGR1_DFSDMEN) != 0U)) {
+    NVIC_DisableIRQ(DMA1_Stream0_IRQn);
+    register_clear_bits(&DFSDM1_Channel0->CHCFGR1, DFSDM_CHCFGR1_DFSDMEN);
+    register_clear_bits(&DMA1_Stream0->CR, DMA_SxCR_EN);
+    while ((DMA1_Stream0->CR & DMA_SxCR_EN) != 0U) {}
+    DMA1_Stream0->CR &= ~DMA_SxCR_CT;
+    DMA1_Stream0->NDTR = MIC_RX_BUF_SIZE;
+    DMA1->LIFCR = 0x7DU;
+    NVIC_ClearPendingIRQ(DMA1_Stream0_IRQn);
+    mic_buffer_count = 0U;
+    (void)memset(mic_tx_buf, 0, sizeof(mic_tx_buf));
+  }
+  if ((audio_idle_count == 0U) && ((SAI4_Block_B->CR1 & SAI_xCR1_SAIEN) != 0U)) {
+    // Stop the synchronized transmitter before removing its clock.
+    register_clear_bits(&SAI4_Block_A->CR1, SAI_xCR1_SAIEN);
+    while ((SAI4_Block_A->CR1 & SAI_xCR1_SAIEN) != 0U) {}
+    register_clear_bits(&SAI4_Block_B->CR1, SAI_xCR1_SAIEN);
+    while ((SAI4_Block_B->CR1 & SAI_xCR1_SAIEN) != 0U) {}
+    SAI4_Block_A->CR2 |= SAI_xCR2_FFLUSH;
+    SAI4_Block_B->CR2 |= SAI_xCR2_FFLUSH;
+    register_clear_bits(&RCC->CR, RCC_CR_PLL2ON);
+    sound_idle_count = 1U;
+  }
+
   if (sound_idle_count > 0U) {
     sound_idle_count--;
     if (sound_idle_count == 0U) {
@@ -27,8 +71,6 @@ void sound_tick(void) {
 
 // Recording processing
 static void DMA1_Stream0_IRQ_Handler(void) {
-  static uint8_t mic_buffer_count;
-
   DMA1->LIFCR |= 0x7DU; // clear flags
 
   uint8_t tx_buf_idx = (((BDMA_Channel1->CCR & BDMA_CCR_CT) >> BDMA_CCR_CT_Pos) == 1U) ? 0U : 1U;
@@ -109,10 +151,14 @@ static void BDMA_Channel0_IRQ_Handler(void) {
     sound_idle_count = SOUND_IDLE_TIMEOUT;
   }
 
-  // Start capture once, away from an output buffer swap. Both clocks then run together.
+  // Start capture away from an output buffer swap. Both clocks then run together.
   uint32_t mic_remaining = BDMA_Channel1->CNDTR;
-  if (((DFSDM1_Channel0->CHCFGR1 & DFSDM_CHCFGR1_DFSDMEN) == 0U) &&
+  if (mic_requested && (audio_idle_count > 0U) && ((DFSDM1_Channel0->CHCFGR1 & DFSDM_CHCFGR1_DFSDMEN) == 0U) &&
       (mic_remaining > (MIC_RX_BUF_SIZE / 2U)) && (mic_remaining < (3U * MIC_RX_BUF_SIZE / 2U))) {
+    DMA1->LIFCR = 0x7DU;
+    NVIC_ClearPendingIRQ(DMA1_Stream0_IRQn);
+    register_set_bits(&DMA1_Stream0->CR, DMA_SxCR_EN);
+    NVIC_EnableIRQ(DMA1_Stream0_IRQn);
     register_set_bits(&DFSDM1_Channel0->CHCFGR1, DFSDM_CHCFGR1_DFSDMEN);
     DFSDM1_Filter0->FLTCR1 |= DFSDM_FLTCR1_RSWSTART;
   }
@@ -213,7 +259,6 @@ void sound_init(void) {
   DMA1_Stream0->NDTR = MIC_RX_BUF_SIZE;
   register_set(&DMA1_Stream0->CR, DMA_SxCR_DBM | (0b10UL << DMA_SxCR_MSIZE_Pos) | (0b10UL << DMA_SxCR_PSIZE_Pos) | DMA_SxCR_MINC | DMA_SxCR_CIRC | DMA_SxCR_TCIE, 0x01F7FFFFU);
   register_set(&DMAMUX1_Channel0->CCR, 101U, DMAMUX_CxCR_DMAREQ_ID_Msk); // DFSDM1_DMA0
-  register_set_bits(&DMA1_Stream0->CR, DMA_SxCR_EN);
   DMA1->LIFCR |= 0x7DU; // clear flags
 
   // DMA (memory -> SAI4)
@@ -225,9 +270,8 @@ void sound_init(void) {
   register_set(&DMAMUX2_Channel1->CCR, 15U, DMAMUX_CxCR_DMAREQ_ID_Msk); // SAI4_A_DMA
   register_set_bits(&BDMA_Channel1->CCR, BDMA_CCR_EN);
 
-  // enable all initted blocks
-  register_set_bits(&SAI4_Block_A->CR1, SAI_xCR1_SAIEN);
-  register_set_bits(&SAI4_Block_B->CR1, SAI_xCR1_SAIEN);
+  // Linux requests clocks when a PCM stream opens.
+  (void)memset(mic_tx_buf, 0, sizeof(mic_tx_buf));
+  register_clear_bits(&RCC->CR, RCC_CR_PLL2ON);
   NVIC_EnableIRQ(BDMA_Channel0_IRQn);
-  NVIC_EnableIRQ(DMA1_Stream0_IRQn);
 }
