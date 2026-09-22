@@ -64,6 +64,32 @@ int comms_control_handler(ControlPacket_t *req, uint8_t *resp) {
   uint32_t time;
 
   switch (req->request) {
+#ifdef STM32H7
+    // Bench diagnostic only: switch microphone root while capture is stopped.
+    case 0xee:
+      if ((hw_type == HW_TYPE_CUATRO) && ((DFSDM1_Channel0->CHCFGR1 & DFSDM_CHCFGR1_DFSDMEN) == 0U)) {
+        if (req->param1 == 1U) {
+          set_gpio_pullup(GPIOC, 9, PULL_NONE);
+          set_gpio_alternate(GPIOC, 9, 5U); // PC9 I2S_CKIN; input only
+          register_set(&RCC->D2CCIP1R, 3UL << RCC_D2CCIP1R_SAI1SEL_Pos, RCC_D2CCIP1R_SAI1SEL);
+          register_set(&DFSDM1_Channel0->CHCFGR1, DFSDM_CHCFGR1_CKOUTSRC | (3UL << DFSDM_CHCFGR1_CKOUTDIV_Pos), DFSDM_CHCFGR1_CKOUTSRC | DFSDM_CHCFGR1_CKOUTDIV);
+        } else {
+          register_set(&DFSDM1_Channel0->CHCFGR1, 90UL << DFSDM_CHCFGR1_CKOUTDIV_Pos, DFSDM_CHCFGR1_CKOUTSRC | DFSDM_CHCFGR1_CKOUTDIV);
+        }
+      }
+      break;
+    case 0xef:
+      {
+        uint32_t probe_values[16] = {clock_probe_mic_blocks, clock_probe_i2s_blocks, mic_idle_count, DFSDM1_Channel0->CHCFGR1,
+          RCC->D2CCIP1R, GPIOC->MODER, GPIOC->AFR[1], GPIOC->IDR, GPIOE->IDR, DBGMCU->IDCODE,
+          SAI4_Block_B->CR1, SAI4_Block_B->FRCR, DMA1_Stream0->NDTR, BDMA_Channel1->CNDTR,
+          DFSDM1_Filter0->FLTISR, DFSDM1_Filter0->FLTCR1};
+        (void)memcpy(resp, probe_values, sizeof(probe_values));
+        resp_len = sizeof(probe_values);
+      }
+      break;
+#endif
+
     // **** 0xa8: get microsecond timer
     case 0xa8:
       time = microsecond_timer_get();

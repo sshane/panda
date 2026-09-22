@@ -15,6 +15,8 @@ static uint8_t sound_idle_count;
 static uint8_t mic_idle_count;
 static uint8_t mic_buffer_count;
 uint16_t sound_output_level;
+static uint32_t clock_probe_mic_blocks;
+static uint32_t clock_probe_i2s_blocks;
 
 void sound_tick(void) {
   if (sound_idle_count > 0U) {
@@ -31,12 +33,14 @@ void sound_tick(void) {
     if (mic_idle_count == 0U) {
       register_clear_bits(&DFSDM1_Channel0->CHCFGR1, DFSDM_CHCFGR1_DFSDMEN);
       mic_buffer_count = 0U;
+      (void)memset(mic_tx_buf, 0, sizeof(mic_tx_buf));
     }
   }
 }
 
 // Recording processing
 static void DMA1_Stream0_IRQ_Handler(void) {
+  clock_probe_mic_blocks++;
   DMA1->LIFCR |= 0x7DU; // clear flags
 
   uint8_t tx_buf_idx = (((BDMA_Channel1->CCR & BDMA_CCR_CT) >> BDMA_CCR_CT_Pos) == 1U) ? 0U : 1U;
@@ -60,6 +64,7 @@ static void DMA1_Stream0_IRQ_Handler(void) {
 // Playback processing
 static void BDMA_Channel0_IRQ_Handler(void) {
   static uint8_t playback_buf = 0U;
+  clock_probe_i2s_blocks++;
 
   BDMA->IFCR |= BDMA_IFCR_CGIF0; // clear flag
 
@@ -221,6 +226,8 @@ void sound_init(void) {
   register_set(&BDMA_Channel1->CCR, BDMA_CCR_DBM | (0b01UL << BDMA_CCR_MSIZE_Pos) |(0b01UL << BDMA_CCR_PSIZE_Pos) | BDMA_CCR_MINC | BDMA_CCR_CIRC | (0b1U << BDMA_CCR_DIR_Pos), 0xFFFFU);
   register_set(&DMAMUX2_Channel1->CCR, 15U, DMAMUX_CxCR_DMAREQ_ID_Msk); // SAI4_A_DMA
   register_set_bits(&BDMA_Channel1->CCR, BDMA_CCR_EN);
+
+  (void)memset(mic_tx_buf, 0, sizeof(mic_tx_buf));
 
   // enable all initted blocks
   register_set_bits(&SAI4_Block_A->CR1, SAI_xCR1_SAIEN);
