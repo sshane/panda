@@ -31,6 +31,7 @@ void sound_tick(void) {
     mic_idle_count--;
     if (mic_idle_count == 0U) {
       register_clear_bits(&DFSDM1_Channel0->CHCFGR1, DFSDM_CHCFGR1_DFSDMEN);
+      register_clear_bits(&RCC->CR, RCC_CR_PLL2ON);
       mic_buffer_count = 0U;
       (void)memset(mic_tx_buf, 0, sizeof(mic_tx_buf));
     }
@@ -128,6 +129,8 @@ static void BDMA_Channel0_IRQ_Handler(void) {
 
   // manage mic state
   if (mic_idle_count == 0U) {
+    register_set_bits(&RCC->CR, RCC_CR_PLL2ON);
+    while ((RCC->CR & RCC_CR_PLL2RDY) == 0U) {}
     register_set_bits(&DFSDM1_Channel0->CHCFGR1, DFSDM_CHCFGR1_DFSDMEN);
     DFSDM1_Filter0->FLTCR1 |= DFSDM_FLTCR1_RSWSTART;
   }
@@ -214,8 +217,6 @@ void sound_init(void) {
   register_set(&RCC->PLL2FRACR, MIC_PLL_FRAC << RCC_PLL2FRACR_FRACN2_Pos, RCC_PLL2FRACR_FRACN2_Msk);
   register_set(&RCC->PLLCFGR, RCC_PLLCFGR_PLL2RGE_2 | RCC_PLLCFGR_DIVP2EN | RCC_PLLCFGR_PLL2FRACEN,
                RCC_PLLCFGR_PLL2RGE | RCC_PLLCFGR_PLL2VCOSEL | RCC_PLLCFGR_DIVP2EN | RCC_PLLCFGR_DIVQ2EN | RCC_PLLCFGR_DIVR2EN | RCC_PLLCFGR_PLL2FRACEN);
-  register_set_bits(&RCC->CR, RCC_CR_PLL2ON);
-  while ((RCC->CR & RCC_CR_PLL2RDY) == 0U) {}
   register_set(&RCC->D2CCIP1R, RCC_D2CCIP1R_SAI1SEL_0, RCC_D2CCIP1R_SAI1SEL);
 
   // init DFSDM for PDM mic
