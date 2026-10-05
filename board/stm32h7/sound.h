@@ -128,11 +128,13 @@ static void BDMA_Channel0_IRQ_Handler(void) {
   }
 
   // manage mic state
-  if (mic_idle_count == 0U) {
+  if ((DFSDM1_Channel0->CHCFGR1 & DFSDM_CHCFGR1_DFSDMEN) == 0U) {
     register_set_bits(&RCC->CR, RCC_CR_PLL2ON);
-    while ((RCC->CR & RCC_CR_PLL2RDY) == 0U) {}
-    register_set_bits(&DFSDM1_Channel0->CHCFGR1, DFSDM_CHCFGR1_DFSDMEN);
-    DFSDM1_Filter0->FLTCR1 |= DFSDM_FLTCR1_RSWSTART;
+    // Retry on the next audio interrupt if the PLL is still starting.
+    if ((RCC->CR & RCC_CR_PLL2RDY) != 0U) {
+      register_set_bits(&DFSDM1_Channel0->CHCFGR1, DFSDM_CHCFGR1_DFSDMEN);
+      DFSDM1_Filter0->FLTCR1 |= DFSDM_FLTCR1_RSWSTART;
+    }
   }
   mic_idle_count = SOUND_IDLE_TIMEOUT;
 }
